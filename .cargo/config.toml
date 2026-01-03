@@ -10,9 +10,3 @@ rustflags = [
     "-Ctarget-cpu=native",
     "-Cinline-threshold=1000",
 ]
-
-[target.aarch64-apple-darwin]
-rustflags = ["-Ctarget-cpu=native"]
-
-[target.x86_64-apple-darwin]
-rustflags = ["-Ctarget-cpu=native"]
