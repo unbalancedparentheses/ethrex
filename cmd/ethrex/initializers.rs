@@ -22,7 +22,7 @@ use ethrex_p2p::{
     types::{Node, NodeRecord},
     utils::public_key_from_signing_key,
 };
-use ethrex_storage::{EngineType, Store, error::StoreError};
+use ethrex_storage::{DbOptions, EngineType, Store, error::StoreError};
 use local_ip_address::{local_ip, local_ipv6};
 use rand::rngs::OsRng;
 use secp256k1::SecretKey;
@@ -142,21 +142,25 @@ pub fn init_metrics(opts: &Options, network: &Network, tracker: TaskTracker) {
 }
 
 /// Opens a new or pre-existing Store and loads the initial state provided by the network
-pub async fn init_store(datadir: impl AsRef<Path>, genesis: Genesis) -> Result<Store, StoreError> {
-    let mut store = open_store(datadir.as_ref())?;
+pub async fn init_store(
+    datadir: impl AsRef<Path>,
+    genesis: Genesis,
+    db_options: DbOptions,
+) -> Result<Store, StoreError> {
+    let mut store = open_store(datadir.as_ref(), db_options)?;
     store.add_initial_state(genesis).await?;
     Ok(store)
 }
 
 /// Initializes a pre-existing Store
-pub async fn load_store(datadir: &Path) -> Result<Store, StoreError> {
-    let store = open_store(datadir)?;
+pub async fn load_store(datadir: &Path, db_options: DbOptions) -> Result<Store, StoreError> {
+    let store = open_store(datadir, db_options)?;
     store.load_initial_state().await?;
     Ok(store)
 }
 
 /// Opens a pre-existing Store or creates a new one
-pub fn open_store(datadir: &Path) -> Result<Store, StoreError> {
+pub fn open_store(datadir: &Path, db_options: DbOptions) -> Result<Store, StoreError> {
     if datadir.ends_with("memory") {
         Store::new(datadir, EngineType::InMemory)
     } else {
@@ -164,7 +168,7 @@ pub fn open_store(datadir: &Path) -> Result<Store, StoreError> {
         let engine_type = EngineType::RocksDB;
         #[cfg(feature = "metrics")]
         ethrex_metrics::process::set_datadir_path(datadir.to_path_buf());
-        Store::new(datadir, engine_type)
+        Store::new_with_options(datadir, engine_type, db_options)
     }
 }
 
@@ -441,7 +445,7 @@ pub async fn init_l1(
     debug!("Preloading KZG trusted setup");
     ethrex_crypto::kzg::warm_up_trusted_setup();
 
-    let store = match init_store(datadir, genesis).await {
+    let store = match init_store(datadir, genesis, opts.db_options()).await {
         Ok(store) => store,
         Err(err @ StoreError::IncompatibleDBVersion { .. })
         | Err(err @ StoreError::NotFoundDBVersion { .. }) => {

@@ -8,6 +8,7 @@ use crate::api::{
     tables::TABLES,
 };
 use crate::error::StoreError;
+use crate::store::DbOptions;
 use rocksdb::DBWithThreadMode;
 use rocksdb::checkpoint::Checkpoint;
 use rocksdb::{
@@ -28,6 +29,13 @@ pub struct RocksDBBackend {
 
 impl RocksDBBackend {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
+        Self::open_with_options(path, DbOptions::default())
+    }
+
+    pub fn open_with_options(
+        path: impl AsRef<Path>,
+        db_options: DbOptions,
+    ) -> Result<Self, StoreError> {
         // Rocksdb optimizations options
         let mut opts = Options::default();
         opts.create_if_missing(true);
@@ -66,7 +74,10 @@ impl RocksDBBackend {
 
         // Memory-mapped reads: bypass RocksDB block cache, read directly from OS page cache.
         // Recommended for systems with 32GB+ RAM where the DB fits in memory.
-        opts.set_allow_mmap_reads(true);
+        if db_options.mmap_reads {
+            opts.set_allow_mmap_reads(true);
+            info!("RocksDB memory-mapped reads enabled");
+        }
 
         let compressible_tables = [
             BLOCK_NUMBERS,

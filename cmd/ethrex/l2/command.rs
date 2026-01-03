@@ -26,7 +26,7 @@ use ethrex_rlp::decode::RLPDecode as _;
 use ethrex_rpc::{
     EthClient, clients::beacon::BeaconClient, types::block_identifier::BlockIdentifier,
 };
-use ethrex_storage::{EngineType, Store};
+use ethrex_storage::{DbOptions, EngineType, Store};
 use ethrex_storage_rollup::StoreRollup;
 use eyre::OptionExt;
 use itertools::Itertools;
@@ -700,7 +700,7 @@ async fn delete_blocks_from_batch(
     let genesis = network.get_genesis()?;
 
     let mut block_to_delete = last_kept_block + 1;
-    let store = init_store(datadir, genesis).await?;
+    let store = init_store(datadir, genesis, DbOptions::default()).await?;
 
     while store
         .get_canonical_block_hash(block_to_delete)

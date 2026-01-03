@@ -21,7 +21,7 @@ use ethrex_p2p::{
     sync_manager::SyncManager,
     types::{Node, NodeRecord},
 };
-use ethrex_storage::Store;
+use ethrex_storage::{DbOptions, Store};
 use ethrex_storage_rollup::{EngineTypeRollup, StoreRollup};
 use eyre::OptionExt;
 use secp256k1::SecretKey;
@@ -189,7 +189,7 @@ pub async fn init_l2(
     let network = get_network(&opts.node_opts);
 
     let genesis = network.get_genesis()?;
-    let store = init_store(&datadir, genesis.clone()).await?;
+    let store = init_store(&datadir, genesis.clone(), opts.node_opts.db_options()).await?;
     let rollup_store = init_rollup_store(&rollup_store_dir).await;
 
     let operator_fee_config = get_operator_fee_config(&opts.sequencer_opts)?;

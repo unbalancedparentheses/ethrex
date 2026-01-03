@@ -21,7 +21,7 @@ use ethrex_p2p::{
     types::Node,
 };
 use ethrex_rlp::encode::RLPEncode;
-use ethrex_storage::error::StoreError;
+use ethrex_storage::{DbOptions, error::StoreError};
 use tokio_util::sync::CancellationToken;
 use tracing::{Level, error, info, warn};
 
@@ -280,6 +280,14 @@ pub struct Options {
         help_heading = "Block building options"
     )]
     pub gas_limit: u64,
+    #[arg(
+        long = "db.no-mmap-reads",
+        action = ArgAction::SetTrue,
+        help = "Disable memory-mapped reads for RocksDB.",
+        long_help = "Memory-mapped reads are enabled by default, bypassing RocksDB block cache. Use this flag to disable mmap on low-RAM systems where the database doesn't fit in memory.",
+        help_heading = "Database options"
+    )]
+    pub db_no_mmap_reads: bool,
 }
 
 impl Options {
@@ -320,6 +328,13 @@ impl Options {
             ..Default::default()
         }
     }
+
+    /// Construct database options from CLI flags
+    pub fn db_options(&self) -> DbOptions {
+        DbOptions {
+            mmap_reads: !self.db_no_mmap_reads,
+        }
+    }
 }
 
 impl Default for Options {
@@ -355,6 +370,7 @@ impl Default for Options {
             lookup_interval: Default::default(),
             extra_data: get_minimal_client_version(),
             gas_limit: DEFAULT_BUILDER_GAS_CEIL,
+            db_no_mmap_reads: false,
         }
     }
 }
@@ -593,7 +609,7 @@ pub async fn import_blocks(
     const MIN_FULL_BLOCKS: usize = 132;
     let start_time = Instant::now();
     init_datadir(datadir);
-    let store = init_store(datadir, genesis).await?;
+    let store = init_store(datadir, genesis, DbOptions::default()).await?;
     let blockchain = init_blockchain(store.clone(), blockchain_opts);
     let path_metadata = metadata(path).expect("Failed to read path");
 
@@ -711,7 +727,7 @@ pub async fn import_blocks_bench(
 ) -> Result<(), ChainError> {
     let start_time = Instant::now();
     init_datadir(datadir);
-    let store = init_store(datadir, genesis).await?;
+    let store = init_store(datadir, genesis, DbOptions::default()).await?;
     let blockchain = init_blockchain(store.clone(), blockchain_opts);
     regenerate_head_state(&store, &blockchain).await.unwrap();
     let path_metadata = metadata(path).expect("Failed to read path");
@@ -825,7 +841,7 @@ pub async fn export_blocks(
     last_number: Option<u64>,
 ) {
     init_datadir(datadir);
-    let store = match load_store(datadir).await {
+    let store = match load_store(datadir, DbOptions::default()).await {
         Err(err) => {
             error!("Failed to load Store due to: {err}");
             return;

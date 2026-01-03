@@ -167,6 +167,21 @@ pub enum EngineType {
     RocksDB,
 }
 
+/// Database performance tuning options
+#[derive(Debug, Clone, Copy)]
+pub struct DbOptions {
+    /// Enable memory-mapped reads. Bypasses RocksDB block cache and reads
+    /// directly from OS page cache. Recommended for systems with 32GB+ RAM.
+    /// Enabled by default.
+    pub mmap_reads: bool,
+}
+
+impl Default for DbOptions {
+    fn default() -> Self {
+        Self { mmap_reads: true }
+    }
+}
+
 pub struct UpdateBatch {
     /// Nodes to be added to the state trie
     pub account_updates: Vec<TrieNode>,
@@ -1245,8 +1260,17 @@ impl Store {
     }
 
     pub fn new(path: impl AsRef<Path>, engine_type: EngineType) -> Result<Self, StoreError> {
+        Self::new_with_options(path, engine_type, DbOptions::default())
+    }
+
+    pub fn new_with_options(
+        path: impl AsRef<Path>,
+        engine_type: EngineType,
+        db_options: DbOptions,
+    ) -> Result<Self, StoreError> {
         // Ignore unused variable warning when compiling without DB features
         let db_path = path.as_ref().to_path_buf();
+        let _ = &db_options; // Silence unused warning for InMemory
 
         if engine_type != EngineType::InMemory {
             // Check that the last used DB version matches the current version
@@ -1256,7 +1280,7 @@ impl Store {
         match engine_type {
             #[cfg(feature = "rocksdb")]
             EngineType::RocksDB => {
-                let backend = Arc::new(RocksDBBackend::open(path)?);
+                let backend = Arc::new(RocksDBBackend::open_with_options(path, db_options)?);
                 Self::from_backend(backend, db_path, DB_COMMIT_THRESHOLD)
             }
             EngineType::InMemory => {
