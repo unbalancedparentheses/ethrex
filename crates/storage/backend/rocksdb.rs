@@ -64,6 +64,10 @@ impl RocksDBBackend {
         opts.set_advise_random_on_open(false);
         opts.set_compression_type(rocksdb::DBCompressionType::None);
 
+        // Memory-mapped reads: bypass RocksDB block cache, read directly from OS page cache.
+        // Recommended for systems with 32GB+ RAM where the DB fits in memory.
+        opts.set_allow_mmap_reads(true);
+
         let compressible_tables = [
             BLOCK_NUMBERS,
             HEADERS,
