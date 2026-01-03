@@ -758,7 +758,7 @@ impl<'a> VM<'a> {
             && !is_delegation_7702
         {
             let mut gas_remaining = gas_limit;
-            let ctx_result = Self::execute_precompile(
+            let ctx_result = self.execute_precompile_cached(
                 code_address,
                 &calldata,
                 gas_limit,

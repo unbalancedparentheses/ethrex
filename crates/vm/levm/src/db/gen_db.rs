@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use bytes::Bytes;
 use ethrex_common::Address;
 use ethrex_common::H256;
 use ethrex_common::U256;
@@ -23,6 +24,10 @@ use std::collections::hash_map::Entry;
 
 pub type CacheDB = FxHashMap<Address, LevmAccount>;
 
+/// Cache for precompile results to avoid redundant computation.
+/// Key: (precompile address, calldata), Value: (result bytes, gas consumed)
+pub type PrecompileCache = FxHashMap<(Address, Bytes), (Bytes, u64)>;
+
 #[derive(Clone)]
 pub struct GeneralizedDatabase {
     pub store: Arc<dyn Database>,
@@ -30,6 +35,9 @@ pub struct GeneralizedDatabase {
     pub initial_accounts_state: CacheDB,
     pub codes: FxHashMap<H256, Code>,
     pub tx_backup: Option<CallFrameBackup>,
+    /// Cache for precompile results within a block to avoid redundant computation.
+    /// Cleared at block boundaries (when a new GeneralizedDatabase is created).
+    pub precompile_cache: PrecompileCache,
 }
 
 impl GeneralizedDatabase {
@@ -40,6 +48,7 @@ impl GeneralizedDatabase {
             initial_accounts_state: Default::default(),
             tx_backup: None,
             codes: Default::default(),
+            precompile_cache: Default::default(),
         }
     }
 
@@ -63,6 +72,7 @@ impl GeneralizedDatabase {
             initial_accounts_state: levm_accounts,
             tx_backup: None,
             codes,
+            precompile_cache: Default::default(),
         }
     }
 
@@ -416,6 +426,27 @@ impl GeneralizedDatabase {
                 account.storage.entry(slot).or_insert(value);
             }
         }
+    }
+
+    // ================== Precompile cache functions =====================
+
+    /// Get a cached precompile result if available.
+    /// Returns (result_bytes, gas_consumed) if found.
+    #[inline]
+    pub fn get_precompile_result(&self, address: &Address, calldata: &Bytes) -> Option<&(Bytes, u64)> {
+        self.precompile_cache.get(&(*address, calldata.clone()))
+    }
+
+    /// Cache a precompile result for future lookups within this block.
+    #[inline]
+    pub fn cache_precompile_result(&mut self, address: Address, calldata: Bytes, result: Bytes, gas_consumed: u64) {
+        self.precompile_cache.insert((address, calldata), (result, gas_consumed));
+    }
+
+    /// Clear the precompile cache (called at block boundaries).
+    #[inline]
+    pub fn clear_precompile_cache(&mut self) {
+        self.precompile_cache.clear();
     }
 }
 

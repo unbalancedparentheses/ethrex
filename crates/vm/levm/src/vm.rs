@@ -4,7 +4,7 @@ use crate::{
     db::gen_db::GeneralizedDatabase,
     debug::DebugMode,
     environment::Environment,
-    errors::{ContextResult, ExecutionReport, InternalError, OpcodeResult, VMError},
+    errors::{ContextResult, ExecutionReport, InternalError, OpcodeResult, TxResult, VMError},
     hooks::{
         backup_hook::BackupHook,
         hook::{Hook, get_hooks},
@@ -451,18 +451,22 @@ impl<'a> VM<'a> {
             self.env.config.fork,
             self.vm_type,
         ) {
-            let call_frame = &mut self.current_call_frame;
+            // Extract values needed for precompile execution
+            let code_address = self.current_call_frame.code_address;
+            let calldata = self.current_call_frame.calldata.clone();
+            let gas_limit = self.current_call_frame.gas_limit;
+            let mut gas_remaining = self.current_call_frame.gas_remaining as u64;
+            let fork = self.env.config.fork;
 
-            let mut gas_remaining = call_frame.gas_remaining as u64;
-            let result = Self::execute_precompile(
-                call_frame.code_address,
-                &call_frame.calldata,
-                call_frame.gas_limit,
+            let result = self.execute_precompile_cached(
+                code_address,
+                &calldata,
+                gas_limit,
                 &mut gas_remaining,
-                self.env.config.fork,
+                fork,
             );
 
-            call_frame.gas_remaining = gas_remaining as i64;
+            self.current_call_frame.gas_remaining = gas_remaining as i64;
 
             return result;
         }
@@ -506,6 +510,7 @@ impl<'a> VM<'a> {
     }
 
     /// Executes precompile and handles the output that it returns, generating a report.
+    /// This is a static method that doesn't use caching.
     pub fn execute_precompile(
         code_address: H160,
         calldata: &Bytes,
@@ -520,6 +525,44 @@ impl<'a> VM<'a> {
             gas_limit,
             *gas_remaining,
         )
+    }
+
+    /// Executes precompile with caching support.
+    /// Checks the precompile cache first, and only executes if not found.
+    /// Results are cached for subsequent calls within the same block.
+    pub fn execute_precompile_cached(
+        &mut self,
+        code_address: H160,
+        calldata: &Bytes,
+        gas_limit: u64,
+        gas_remaining: &mut u64,
+        fork: Fork,
+    ) -> Result<ContextResult, VMError> {
+        // Check cache first
+        if let Some((cached_result, gas_consumed)) = self.db.get_precompile_result(&code_address, calldata) {
+            // Verify we have enough gas for the cached result
+            if *gas_remaining >= *gas_consumed {
+                *gas_remaining = gas_remaining.saturating_sub(*gas_consumed);
+                return Ok(ContextResult {
+                    result: TxResult::Success,
+                    gas_used: *gas_consumed,
+                    output: cached_result.clone(),
+                });
+            }
+            // If not enough gas, fall through to regular execution which will handle the error
+        }
+
+        // Cache miss - execute the precompile
+        let initial_gas = *gas_remaining;
+        let result = precompiles::execute_precompile(code_address, calldata, gas_remaining, fork);
+        let gas_consumed = initial_gas.saturating_sub(*gas_remaining);
+
+        // Cache successful results
+        if let Ok(ref output) = result {
+            self.db.cache_precompile_result(code_address, calldata.clone(), output.clone(), gas_consumed);
+        }
+
+        Self::handle_precompile_result(result, gas_limit, *gas_remaining)
     }
 
     /// True if external transaction is a contract creation
