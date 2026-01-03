@@ -2600,6 +2600,7 @@ dependencies = [
  "ethrex-vm",
  "hex",
  "itertools 0.13.0",
+ "mimalloc",
  "rayon",
  "revm",
  "serde",
@@ -5446,6 +5447,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "libmimalloc-sys"
+version = "0.1.44"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "667f4fec20f29dfc6bc7357c582d91796c169ad7e2fce709468aefeb2c099870"
+dependencies = [
+ "cc",
+ "libc",
+]
+
+[[package]]
 name = "libredox"
 version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5793,6 +5804,15 @@ dependencies = [
  "ethrex-storage 1.0.0",
  "ethrex-storage 8.0.0",
  "tokio",
+]
+
+[[package]]
+name = "mimalloc"
+version = "0.1.48"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1ee66a4b64c74f4ef288bcbb9192ad9c3feaad75193129ac8509af543894fd8"
+dependencies = [
+ "libmimalloc-sys",
 ]
 
 [[package]]
