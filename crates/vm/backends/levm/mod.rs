@@ -20,6 +20,7 @@ use ethrex_common::{
 };
 use ethrex_levm::EVMConfig;
 use ethrex_levm::call_frame::Stack;
+use ethrex_levm::prefetch::collect_prefetch_targets;
 use ethrex_levm::constants::{
     POST_OSAKA_GAS_LIMIT_CAP, STACK_LIMIT, SYS_CALL_GAS_LIMIT, TX_BASE_COST,
 };
@@ -55,13 +56,25 @@ impl LEVM {
     ) -> Result<BlockExecutionResult, EvmError> {
         Self::prepare_block(block, db, vm_type)?;
 
-        let mut receipts = Vec::new();
-        let mut cumulative_gas_used = 0;
+        // Collect all transactions with senders upfront for prefetching
+        let txs_with_senders = block
+            .body
+            .get_transactions_with_sender()
+            .map_err(|error| {
+                EvmError::Transaction(format!("Couldn't recover addresses with error: {error}"))
+            })?;
 
-        for (tx, tx_sender) in block.body.get_transactions_with_sender().map_err(|error| {
-            EvmError::Transaction(format!("Couldn't recover addresses with error: {error}"))
-        })? {
-            if cumulative_gas_used + tx.gas_limit() > block.header.gas_limit {
+        // Speculative prefetch: accounts (senders, recipients) + ERC-20 pattern storage slots
+        let (addresses, storage_slots) =
+            collect_prefetch_targets(&txs_with_senders, block.header.coinbase);
+        db.prefetch_accounts(&addresses);
+        db.prefetch_storage_slots(&storage_slots);
+
+        let mut receipts = Vec::new();
+        let mut cumulative_gas_used: u64 = 0;
+
+        for (tx, tx_sender) in txs_with_senders {
+            if cumulative_gas_used.saturating_add(tx.gas_limit()) > block.header.gas_limit {
                 return Err(EvmError::Transaction(format!(
                     "Gas allowance exceeded. Block gas limit {} can be surpassed by executing transaction with gas limit {}",
                     block.header.gas_limit,
@@ -71,7 +84,7 @@ impl LEVM {
 
             let report = Self::execute_tx(tx, tx_sender, &block.header, db, vm_type)?;
 
-            cumulative_gas_used += report.gas_used;
+            cumulative_gas_used = cumulative_gas_used.saturating_add(report.gas_used);
             let receipt = Receipt::new(
                 tx.tx_type(),
                 matches!(report.result, TxResult::Success),

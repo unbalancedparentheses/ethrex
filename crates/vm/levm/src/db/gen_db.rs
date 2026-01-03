@@ -17,6 +17,7 @@ use crate::utils::account_to_levm_account;
 use crate::utils::restore_cache_state;
 use crate::vm::VM;
 pub use ethrex_common::types::AccountUpdate;
+use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 use std::collections::hash_map::Entry;
 
@@ -346,6 +347,75 @@ impl GeneralizedDatabase {
                 .map(|(k, v)| (*k, v.clone())),
         );
         Ok(account_updates)
+    }
+
+    // ================== Prefetching functions =====================
+
+    /// Prefetch multiple accounts in parallel to warm the cache.
+    /// This should be called before transaction execution to hide disk I/O latency.
+    pub fn prefetch_accounts(&mut self, addresses: &[Address]) {
+        let store = &self.store;
+        let current_state = &self.current_accounts_state;
+
+        // Fetch accounts in parallel, skipping those already cached
+        let fetched: Vec<_> = addresses
+            .par_iter()
+            .filter(|addr| !current_state.contains_key(addr))
+            .filter_map(|addr| {
+                store
+                    .get_account_state(*addr)
+                    .ok()
+                    .map(|state| (*addr, LevmAccount::from(state)))
+            })
+            .collect();
+
+        // Insert into cache sequentially to avoid lock contention
+        for (addr, account) in fetched {
+            self.current_accounts_state.entry(addr).or_insert_with(|| {
+                self.initial_accounts_state.insert(addr, account.clone());
+                account
+            });
+        }
+    }
+
+    /// Prefetch storage slots in parallel to warm the cache.
+    /// Should be called after prefetch_accounts() since we need the accounts loaded.
+    pub fn prefetch_storage_slots(&mut self, slots: &[(Address, H256)]) {
+        if slots.is_empty() {
+            return;
+        }
+
+        let store = &self.store;
+        let current_state = &self.current_accounts_state;
+
+        // Fetch storage slots in parallel, skipping those already cached
+        let fetched: Vec<_> = slots
+            .par_iter()
+            .filter(|(addr, slot)| {
+                // Skip if slot is already in the account's storage cache
+                current_state
+                    .get(addr)
+                    .map(|acc| !acc.storage.contains_key(slot))
+                    .unwrap_or(false) // Skip if account not loaded
+            })
+            .filter_map(|(addr, slot)| {
+                store
+                    .get_storage_value(*addr, *slot)
+                    .ok()
+                    .map(|value| (*addr, *slot, value))
+            })
+            .collect();
+
+        // Insert into cache sequentially
+        for (addr, slot, value) in fetched {
+            if let Some(account) = self.current_accounts_state.get_mut(&addr) {
+                account.storage.entry(slot).or_insert(value);
+            }
+            // Also update initial_accounts_state for consistency
+            if let Some(account) = self.initial_accounts_state.get_mut(&addr) {
+                account.storage.entry(slot).or_insert(value);
+            }
+        }
     }
 }
 
