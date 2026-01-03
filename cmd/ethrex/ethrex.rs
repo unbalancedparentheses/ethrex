@@ -13,12 +13,20 @@ use tracing::info;
 
 const LATEST_VERSION_URL: &str = "https://api.github.com/repos/lambdaclass/ethrex/releases/latest";
 
-#[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
+// mimalloc is the default allocator (faster for allocation-heavy EVM workloads)
+#[cfg(all(feature = "mimalloc", not(target_env = "msvc")))]
 #[global_allocator]
-static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+// jemalloc is an optional alternative (enable with --features jemalloc --no-default-features ...)
+#[cfg(all(feature = "jemalloc", not(feature = "mimalloc"), not(target_env = "msvc")))]
+#[global_allocator]
+static ALLOC_JE: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 fn log_global_allocator() {
-    if cfg!(all(feature = "jemalloc", not(target_env = "msvc"))) {
+    if cfg!(all(feature = "mimalloc", not(target_env = "msvc"))) {
+        tracing::info!("Global allocator: mimalloc");
+    } else if cfg!(all(feature = "jemalloc", not(target_env = "msvc"))) {
         tracing::info!("Global allocator: jemalloc (tikv-jemallocator)");
     } else {
         tracing::info!("Global allocator: system (std::alloc::System)");

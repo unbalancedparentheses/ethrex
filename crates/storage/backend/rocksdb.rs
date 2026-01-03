@@ -36,41 +36,55 @@ impl RocksDBBackend {
         path: impl AsRef<Path>,
         db_options: DbOptions,
     ) -> Result<Self, StoreError> {
-        // Rocksdb optimizations options
+        // RocksDB optimizations - tuned for high-RAM systems (similar to Nethermind config)
         let mut opts = Options::default();
         opts.create_if_missing(true);
         opts.create_missing_column_families(true);
 
-        opts.set_max_open_files(-1);
+        // File handling
+        opts.set_max_open_files(-1); // Keep all files open
         opts.set_max_file_opening_threads(16);
 
+        // Background jobs for compaction/flush
         opts.set_max_background_jobs(8);
 
-        opts.set_level_zero_file_num_compaction_trigger(2);
-        opts.set_level_zero_slowdown_writes_trigger(10);
-        opts.set_level_zero_stop_writes_trigger(16);
-        opts.set_target_file_size_base(512 * 1024 * 1024); // 512MB
+        // Compaction triggers - relaxed to reduce write amplification
+        opts.set_level_zero_file_num_compaction_trigger(4);
+        opts.set_level_zero_slowdown_writes_trigger(20);
+        opts.set_level_zero_stop_writes_trigger(36);
+        opts.set_target_file_size_base(256 * 1024 * 1024); // 256MB
         opts.set_max_bytes_for_level_base(2 * 1024 * 1024 * 1024); // 2GB L1
         opts.set_max_bytes_for_level_multiplier(10.0);
         opts.set_level_compaction_dynamic_level_bytes(true);
 
-        opts.set_db_write_buffer_size(1024 * 1024 * 1024); // 1GB
-        opts.set_write_buffer_size(128 * 1024 * 1024); // 128MB
+        // Write buffers - larger for better batching (Nethermind uses 200MB)
+        opts.set_db_write_buffer_size(2 * 1024 * 1024 * 1024); // 2GB total
+        opts.set_write_buffer_size(256 * 1024 * 1024); // 256MB per CF
         opts.set_max_write_buffer_number(4);
         opts.set_min_write_buffer_number_to_merge(2);
 
+        // WAL settings
         opts.set_wal_recovery_mode(rocksdb::DBRecoveryMode::PointInTime);
-        opts.set_max_total_wal_size(2 * 1024 * 1024 * 1024); // 2GB
-        opts.set_wal_bytes_per_sync(32 * 1024 * 1024); // 32MB
-        opts.set_bytes_per_sync(32 * 1024 * 1024); // 32MB
-        opts.set_use_fsync(false); // fdatasync
+        opts.set_max_total_wal_size(4 * 1024 * 1024 * 1024); // 4GB
+        opts.set_wal_bytes_per_sync(64 * 1024 * 1024); // 64MB
+        opts.set_bytes_per_sync(64 * 1024 * 1024); // 64MB
+        opts.set_use_fsync(false); // fdatasync is faster
 
+        // Write optimizations
         opts.set_enable_pipelined_write(true);
         opts.set_allow_concurrent_memtable_write(true);
         opts.set_enable_write_thread_adaptive_yield(true);
+
+        // Read optimizations
         opts.set_compaction_readahead_size(4 * 1024 * 1024); // 4MB
         opts.set_advise_random_on_open(false);
+
+        // No compression for hot state data (faster reads, more disk space)
         opts.set_compression_type(rocksdb::DBCompressionType::None);
+
+        // Row cache for point lookups (256MB) - helps with SLOAD/SSTORE
+        let row_cache = rocksdb::Cache::new_lru_cache(256 * 1024 * 1024);
+        opts.set_row_cache(&row_cache);
 
         // Memory-mapped reads: bypass RocksDB block cache, read directly from OS page cache.
         // Recommended for systems with 32GB+ RAM where the DB fits in memory.
@@ -121,9 +135,10 @@ impl RocksDBBackend {
 
                     let mut block_opts = BlockBasedOptions::default();
                     block_opts.set_block_size(32 * 1024); // 32KB blocks
-                    // 128MB block cache for headers/bodies (frequently accessed)
-                    let cache = rocksdb::Cache::new_lru_cache(128 * 1024 * 1024);
+                    // 256MB block cache for headers/bodies
+                    let cache = rocksdb::Cache::new_lru_cache(256 * 1024 * 1024);
                     block_opts.set_block_cache(&cache);
+                    block_opts.set_bloom_filter(10.0, false);
                     cf_opts.set_block_based_table_factory(&block_opts);
                 }
                 CANONICAL_BLOCK_HASHES | BLOCK_NUMBERS => {
@@ -133,27 +148,30 @@ impl RocksDBBackend {
 
                     let mut block_opts = BlockBasedOptions::default();
                     block_opts.set_block_size(16 * 1024); // 16KB
-                    // 15 bits per key reduces false positive rate from ~1% to ~0.1%
                     block_opts.set_bloom_filter(15.0, false);
+                    // 64MB cache for hash lookups
+                    let cache = rocksdb::Cache::new_lru_cache(64 * 1024 * 1024);
+                    block_opts.set_block_cache(&cache);
                     cf_opts.set_block_based_table_factory(&block_opts);
                 }
                 ACCOUNT_TRIE_NODES | STORAGE_TRIE_NODES => {
+                    // Trie nodes are the hottest path - large buffers and cache
                     cf_opts.set_write_buffer_size(512 * 1024 * 1024); // 512MB
                     cf_opts.set_max_write_buffer_number(6);
                     cf_opts.set_min_write_buffer_number_to_merge(2);
                     cf_opts.set_target_file_size_base(256 * 1024 * 1024); // 256MB
-                    cf_opts.set_memtable_prefix_bloom_ratio(0.2); // Bloom filter
+                    cf_opts.set_memtable_prefix_bloom_ratio(0.2);
 
                     let mut block_opts = BlockBasedOptions::default();
                     block_opts.set_block_size(16 * 1024); // 16KB
-                    // 15 bits per key reduces false positive rate from ~1% to ~0.1%
                     block_opts.set_bloom_filter(15.0, false);
-                    // 256MB block cache for trie nodes (hot path)
-                    let cache = rocksdb::Cache::new_lru_cache(256 * 1024 * 1024);
+                    // 512MB block cache for trie nodes (critical hot path)
+                    let cache = rocksdb::Cache::new_lru_cache(512 * 1024 * 1024);
                     block_opts.set_block_cache(&cache);
                     cf_opts.set_block_based_table_factory(&block_opts);
                 }
                 ACCOUNT_FLATKEYVALUE | STORAGE_FLATKEYVALUE => {
+                    // FlatKV is used for O(1) reads - large cache
                     cf_opts.set_write_buffer_size(512 * 1024 * 1024); // 512MB
                     cf_opts.set_max_write_buffer_number(6);
                     cf_opts.set_min_write_buffer_number_to_merge(2);
