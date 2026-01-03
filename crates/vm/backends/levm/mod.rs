@@ -65,9 +65,30 @@ impl LEVM {
             })?;
 
         // Speculative prefetch: accounts (senders, recipients) + ERC-20 pattern storage slots
-        let (addresses, storage_slots) =
+        let (addresses, mut storage_slots) =
             collect_prefetch_targets(&txs_with_senders, block.header.coinbase);
         db.prefetch_accounts(&addresses);
+
+        // Phase 2: Bytecode analysis for SLOAD patterns
+        // After accounts are prefetched, analyze contract bytecode to predict additional slots
+        let contracts: Vec<_> = txs_with_senders
+            .iter()
+            .filter_map(|(tx, sender)| match tx.to() {
+                TxKind::Call(addr) => Some((addr, *sender)),
+                TxKind::Create => None,
+            })
+            .collect();
+
+        if !contracts.is_empty() {
+            // Use first sender as origin (most txs have same origin as sender)
+            let origin = txs_with_senders
+                .first()
+                .map(|(_, s)| *s)
+                .unwrap_or_default();
+            let bytecode_slots = db.analyze_and_predict_slots(&contracts, origin);
+            storage_slots.extend(bytecode_slots);
+        }
+
         db.prefetch_storage_slots(&storage_slots);
 
         let mut receipts = Vec::new();

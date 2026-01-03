@@ -448,6 +448,65 @@ impl GeneralizedDatabase {
     pub fn clear_precompile_cache(&mut self) {
         self.precompile_cache.clear();
     }
+
+    // ================== Bytecode prefetching functions =====================
+
+    /// Analyze bytecode for contracts and predict storage slots to prefetch.
+    ///
+    /// This function:
+    /// 1. Gets bytecode for each contract address (must be prefetched first)
+    /// 2. Analyzes bytecode to find SLOAD patterns
+    /// 3. Returns predicted storage slots based on patterns
+    ///
+    /// Call this AFTER prefetch_accounts() to ensure bytecode is available.
+    pub fn analyze_and_predict_slots(
+        &mut self,
+        contracts: &[(Address, Address)], // (contract_address, tx_sender)
+        origin: Address,
+    ) -> Vec<(Address, H256)> {
+        use crate::prefetch::{analyze_bytecode, predict_slots_from_bytecode};
+
+        let mut predicted_slots = Vec::new();
+
+        // Empty code hash constant (keccak256 of empty bytes)
+        const EMPTY_CODE_HASH: [u8; 32] = [
+            0xc5, 0xd2, 0x46, 0x01, 0x86, 0xf7, 0x23, 0x3c, 0x92, 0x7e, 0x7d, 0xb2,
+            0xdc, 0xc7, 0x03, 0xc0, 0xe5, 0x00, 0xb6, 0x53, 0xca, 0x82, 0x27, 0x3b,
+            0x7b, 0xfa, 0xd8, 0x04, 0x5d, 0x85, 0xa4, 0x70,
+        ];
+
+        for &(contract, sender) in contracts {
+            // Get account to check if it has code
+            let code_hash = {
+                let Ok(account) = self.get_account(contract) else {
+                    continue;
+                };
+
+                // Skip if no code (EOA or empty)
+                if account.info.code_hash == H256::zero()
+                    || account.info.code_hash == H256::from_slice(&EMPTY_CODE_HASH)
+                {
+                    continue;
+                }
+
+                account.info.code_hash
+            };
+
+            // Get the bytecode
+            let Ok(code) = self.get_code(code_hash) else {
+                continue;
+            };
+
+            // Analyze bytecode for SLOAD patterns
+            let analysis = analyze_bytecode(code);
+
+            // Predict slots based on analysis
+            let slots = predict_slots_from_bytecode(contract, &analysis, sender, origin);
+            predicted_slots.extend(slots);
+        }
+
+        predicted_slots
+    }
 }
 
 impl<'a> VM<'a> {
